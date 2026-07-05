@@ -1,0 +1,316 @@
+#!/bin/bash
+#
+# Zstatic CDN 节点 TCP 丢包探测脚本
+# 用法: bash <(curl -sL https://your-server/nping_tui.sh)
+#
+# 每节点发送 10 个裸 TCP SYN 包，无内核重传
+# TUI 风格实时展示省份/运营商丢包率
+#
+
+set -e
+
+# ===================== 颜色定义 =====================
+RED='\033[0;31m';    GREEN='\033[0;32m';    YELLOW='\033[0;33m'
+BLUE='\033[0;34m';   CYAN='\033[0;36m';     MAGENTA='\033[0;35m'
+WHITE='\033[1;37m';  BOLD='\033[1m';        DIM='\033[2m'
+NC='\033[0m'
+BG_RED='\033[41m';   BG_GREEN='\033[42m';   BG_YELLOW='\033[43m'
+
+# ===================== 检测并安装 nping =====================
+check_nping() {
+  if command -v nping &>/dev/null; then
+    return 0
+  fi
+  echo -e "${YELLOW}[!] nping 未安装，正在自动安装...${NC}"
+  if command -v apt-get &>/dev/null; then
+    apt-get update -qq && apt-get install -y -qq nmap 2>/dev/null
+  elif command -v yum &>/dev/null; then
+    yum install -y -q nmap 2>/dev/null
+  elif command -v brew &>/dev/null; then
+    brew install nmap 2>/dev/null
+  else
+    echo -e "${RED}[X] 无法自动安装 nping，请手动安装 nmap 包${NC}"
+    exit 1
+  fi
+  if command -v nping &>/dev/null; then
+    echo -e "${GREEN}[√] nping 安装成功${NC}"
+  else
+    echo -e "${RED}[X] nping 安装失败${NC}"
+    exit 1
+  fi
+}
+
+# ===================== 节点数据 =====================
+NODES=(
+  "河北 联通 he-cu-v4.ip.zstaticcdn.com"
+  "河北 移动 he-cm-v4.ip.zstaticcdn.com"
+  "河北 电信 he-ct-v4.ip.zstaticcdn.com"
+  "山西 联通 sx-cu-v4.ip.zstaticcdn.com"
+  "山西 移动 sx-cm-v4.ip.zstaticcdn.com"
+  "山西 电信 sx-ct-v4.ip.zstaticcdn.com"
+  "辽宁 联通 ln-cu-v4.ip.zstaticcdn.com"
+  "辽宁 移动 ln-cm-v4.ip.zstaticcdn.com"
+  "辽宁 电信 ln-ct-v4.ip.zstaticcdn.com"
+  "吉林 联通 jl-cu-v4.ip.zstaticcdn.com"
+  "吉林 移动 jl-cm-v4.ip.zstaticcdn.com"
+  "吉林 电信 jl-ct-v4.ip.zstaticcdn.com"
+  "黑龙江 联通 hl-cu-v4.ip.zstaticcdn.com"
+  "黑龙江 移动 hl-cm-v4.ip.zstaticcdn.com"
+  "黑龙江 电信 hl-ct-v4.ip.zstaticcdn.com"
+  "江苏 联通 js-cu-v4.ip.zstaticcdn.com"
+  "江苏 移动 js-cm-v4.ip.zstaticcdn.com"
+  "江苏 电信 js-ct-v4.ip.zstaticcdn.com"
+  "浙江 联通 zj-cu-v4.ip.zstaticcdn.com"
+  "浙江 移动 zj-cm-v4.ip.zstaticcdn.com"
+  "浙江 电信 zj-ct-v4.ip.zstaticcdn.com"
+  "安徽 联通 ah-cu-v4.ip.zstaticcdn.com"
+  "安徽 移动 ah-cm-v4.ip.zstaticcdn.com"
+  "安徽 电信 ah-ct-v4.ip.zstaticcdn.com"
+  "福建 联通 fj-cu-v4.ip.zstaticcdn.com"
+  "福建 移动 fj-cm-v4.ip.zstaticcdn.com"
+  "福建 电信 fj-ct-v4.ip.zstaticcdn.com"
+  "江西 联通 jx-cu-v4.ip.zstaticcdn.com"
+  "江西 移动 jx-cm-v4.ip.zstaticcdn.com"
+  "江西 电信 jx-ct-v4.ip.zstaticcdn.com"
+  "山东 联通 sd-cu-v4.ip.zstaticcdn.com"
+  "山东 移动 sd-cm-v4.ip.zstaticcdn.com"
+  "山东 电信 sd-ct-v4.ip.zstaticcdn.com"
+  "河南 联通 ha-cu-v4.ip.zstaticcdn.com"
+  "河南 移动 ha-cm-v4.ip.zstaticcdn.com"
+  "河南 电信 ha-ct-v4.ip.zstaticcdn.com"
+  "湖北 联通 hb-cu-v4.ip.zstaticcdn.com"
+  "湖北 移动 hb-cm-v4.ip.zstaticcdn.com"
+  "湖北 电信 hb-ct-v4.ip.zstaticcdn.com"
+  "湖南 联通 hn-cu-v4.ip.zstaticcdn.com"
+  "湖南 移动 hn-cm-v4.ip.zstaticcdn.com"
+  "湖南 电信 hn-ct-v4.ip.zstaticcdn.com"
+  "广东 联通 gd-cu-v4.ip.zstaticcdn.com"
+  "广东 移动 gd-cm-v4.ip.zstaticcdn.com"
+  "广东 电信 gd-ct-v4.ip.zstaticcdn.com"
+  "海南 联通 hi-cu-v4.ip.zstaticcdn.com"
+  "海南 移动 hi-cm-v4.ip.zstaticcdn.com"
+  "海南 电信 hi-ct-v4.ip.zstaticcdn.com"
+  "四川 联通 sc-cu-v4.ip.zstaticcdn.com"
+  "四川 移动 sc-cm-v4.ip.zstaticcdn.com"
+  "四川 电信 sc-ct-v4.ip.zstaticcdn.com"
+  "贵州 联通 gz-cu-v4.ip.zstaticcdn.com"
+  "贵州 移动 gz-cm-v4.ip.zstaticcdn.com"
+  "贵州 电信 gz-ct-v4.ip.zstaticcdn.com"
+  "云南 联通 yn-cu-v4.ip.zstaticcdn.com"
+  "云南 移动 yn-cm-v4.ip.zstaticcdn.com"
+  "云南 电信 yn-ct-v4.ip.zstaticcdn.com"
+  "陕西 联通 sn-cu-v4.ip.zstaticcdn.com"
+  "陕西 移动 sn-cm-v4.ip.zstaticcdn.com"
+  "陕西 电信 sn-ct-v4.ip.zstaticcdn.com"
+  "甘肃 联通 gs-cu-v4.ip.zstaticcdn.com"
+  "甘肃 移动 gs-cm-v4.ip.zstaticcdn.com"
+  "甘肃 电信 gs-ct-v4.ip.zstaticcdn.com"
+  "青海 联通 qh-cu-v4.ip.zstaticcdn.com"
+  "青海 移动 qh-cm-v4.ip.zstaticcdn.com"
+  "青海 电信 qh-ct-v4.ip.zstaticcdn.com"
+  "内蒙古 联通 nm-cu-v4.ip.zstaticcdn.com"
+  "内蒙古 移动 nm-cm-v4.ip.zstaticcdn.com"
+  "内蒙古 电信 nm-ct-v4.ip.zstaticcdn.com"
+  "广西 联通 gx-cu-v4.ip.zstaticcdn.com"
+  "广西 移动 gx-cm-v4.ip.zstaticcdn.com"
+  "广西 电信 gx-ct-v4.ip.zstaticcdn.com"
+  "西藏 联通 xz-cu-v4.ip.zstaticcdn.com"
+  "西藏 移动 xz-cm-v4.ip.zstaticcdn.com"
+  "西藏 电信 xz-ct-v4.ip.zstaticcdn.com"
+  "宁夏 联通 nx-cu-v4.ip.zstaticcdn.com"
+  "宁夏 移动 nx-cm-v4.ip.zstaticcdn.com"
+  "宁夏 电信 nx-ct-v4.ip.zstaticcdn.com"
+  "新疆 联通 xj-cu-v4.ip.zstaticcdn.com"
+  "新疆 移动 xj-cm-v4.ip.zstaticcdn.com"
+  "新疆 电信 xj-ct-v4.ip.zstaticcdn.com"
+  "北京 联通 bj-cu-v4.ip.zstaticcdn.com"
+  "北京 移动 bj-cm-v4.ip.zstaticcdn.com"
+  "北京 电信 bj-ct-v4.ip.zstaticcdn.com"
+  "天津 联通 tj-cu-v4.ip.zstaticcdn.com"
+  "天津 移动 tj-cm-v4.ip.zstaticcdn.com"
+  "天津 电信 tj-ct-v4.ip.zstaticcdn.com"
+  "上海 联通 sh-cu-v4.ip.zstaticcdn.com"
+  "上海 移动 sh-cm-v4.ip.zstaticcdn.com"
+  "上海 电信 sh-ct-v4.ip.zstaticcdn.com"
+  "重庆 联通 cq-cu-v4.ip.zstaticcdn.com"
+  "重庆 移动 cq-cm-v4.ip.zstaticcdn.com"
+  "重庆 电信 cq-ct-v4.ip.zstaticcdn.com"
+)
+
+PACKETS=10
+TOTAL=${#NODES[@]}
+PARALLEL=15
+RESULT_DIR=$(mktemp -d)
+trap "rm -rf $RESULT_DIR" EXIT
+
+# ===================== 工具函数 =====================
+loss_color() {
+  local v
+  v=$(awk -v x="$1" 'BEGIN { printf "%d", x }' 2>/dev/null)
+  v=${v:-0}
+  if   [ "$v" -eq 0 ];  then echo -n "${GREEN}$1%%${NC}"
+  elif [ "$v" -le 5 ];  then echo -n "${YELLOW}$1%%${NC}"
+  elif [ "$v" -le 20 ]; then echo -n "${MAGENTA}$1%%${NC}"
+  else                      echo -n "${RED}$1%%${NC}"
+  fi
+}
+
+loss_level() {
+  awk -v x="$1" 'BEGIN { v=int(x); if(v==0) print 0; else if(v<=5) print 1; else if(v<=20) print 2; else print 3 }' 2>/dev/null
+}
+
+bar() {
+  local done=$1 total=$2 width=40
+  local pct=$(( done * 100 / total ))
+  local fill=$(( done * width / total ))
+  local empty=$(( width - fill ))
+  printf "["
+  printf "%${fill}s" | tr ' ' '█'
+  printf "%${empty}s" | tr ' ' '░'
+  printf "] %d/%d (%d%%)" "$done" "$total" "$pct"
+}
+
+# ===================== 单节点测试 =====================
+test_one() {
+  local prov="$1" isp="$2" host="$3" idx="$4"
+  local outfile="${RESULT_DIR}/${idx}"
+
+  local ip
+  ip=$(dig +short "$host" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  if [ -z "$ip" ]; then
+    echo "FAIL|$prov|$isp|$host|DNS|0|0|100.00|0" > "$outfile"
+    return
+  fi
+
+  local raw
+  raw=$(nping --tcp -p 80 --flags syn -c "$PACKETS" --delay 1s "$ip" 2>&1)
+  local sent rcvd loss_pct avg_rtt
+  sent=$(echo "$raw" | grep 'Raw packets sent' | grep -oP 'sent:\s+\K\d+')
+  rcvd=$(echo "$raw" | grep 'Raw packets sent' | grep -oP 'Rcvd:\s+\K\d+')
+  loss_pct=$(echo "$raw" | grep 'Raw packets sent' | grep -oP '\(\K[\d.]+(?=%)')
+  avg_rtt=$(echo "$raw" | grep 'Avg rtt' | grep -oP 'Avg rtt:\s+\K[\d.]+')
+
+  loss_pct=${loss_pct:-100.00}
+  avg_rtt=${avg_rtt:-0}
+  sent=${sent:-$PACKETS}
+  rcvd=${rcvd:-0}
+
+  echo "OK|$prov|$isp|$host|$ip|$sent|$rcvd|$loss_pct|$avg_rtt" > "$outfile"
+}
+
+export -f test_one
+export RESULT_DIR PACKETS
+
+# ===================== 主流程 =====================
+main() {
+  clear
+  echo -e "${BOLD}${CYAN}"
+  echo "  ╔══════════════════════════════════════════════════════╗"
+  echo "  ║       Zstatic CDN 节点 TCP 丢包探测               ║"
+  echo "  ║       协议: 裸 TCP SYN (nping) · 无重传            ║"
+  echo "  ╚══════════════════════════════════════════════════════╝"
+  echo -e "${NC}"
+  echo -e "${DIM}  节点: $TOTAL  每节点发包: $PACKETS  并行: $PARALLEL  端口: 80/tcp${NC}"
+  echo ""
+
+  check_nping
+  echo ""
+
+  # 并行测试
+  local running=0 idx=0
+  for entry in "${NODES[@]}"; do
+    read -r prov isp host <<< "$entry"
+    idx=$((idx + 1))
+    test_one "$prov" "$isp" "$host" "$idx" &
+    running=$((running + 1))
+    if [ "$running" -ge "$PARALLEL" ]; then
+      wait -n 2>/dev/null || true
+      running=$((running - 1))
+    fi
+  done
+  wait
+
+  # 收集结果并写入 CSV
+  local CSV="/tmp/zstatic_nping_$(date +%Y%m%d_%H%M%S).csv"
+  printf '\xEF\xBB\xBF' > "$CSV"
+  echo "省份,运营商,域名,IP,状态,发送,收到,丢包率(%),平均延迟ms" >> "$CSV"
+
+  local sorted_file
+  sorted_file=$(mktemp)
+  for i in $(seq 1 $TOTAL); do
+    local f="${RESULT_DIR}/${i}"
+    if [ -f "$f" ]; then
+      IFS='|' read -r status prov isp host ip snd rcv loss lat < "$f"
+      echo "$prov,$isp,$host,$ip,$status,$snd,$rcv,$loss,$lat" >> "$CSV"
+      echo "$status|$prov|$isp|$host|$ip|$snd|$rcv|$loss|$lat" >> "$sorted_file"
+    fi
+  done
+
+  # ---- TUI 结果展示 ----
+  clear
+  echo -e "${BOLD}${CYAN}"
+  echo "  ╔══════════════════════════════════════════════════════╗"
+  echo "  ║       Zstatic CDN 节点 TCP 丢包探测 · 结果        ║"
+  echo "  ╚══════════════════════════════════════════════════════╝"
+  echo -e "${NC}"
+  echo -e "${DIM}  nping 裸 SYN  ·  每节点 ${PACKETS} 包  ·  端口 80${NC}"
+  echo ""
+
+  # 用 awk 做统计（避免 bash 浮点/空值问题）
+  awk -F'|' '
+  BEGIN { z=0; l=0; m=0; h=0; }
+  $1 == "OK" {
+    v = int($8 + 0);
+    if      (v == 0)  z++
+    else if (v <= 5)  l++
+    else if (v <= 20) m++
+    else              h++
+  }
+  END {
+    printf "  \033[1m统计摘要\033[0m\n"
+    printf "  ┌─────────────────────────────────────────────┐\n"
+    printf "  │ \033[0;32m零丢包   %3d\033[0m  │ \033[0;33m1-5%%     %3d\033[0m  │ \033[0;35m6-20%%    %3d\033[0m  │ \033[0;31m>20%%     %3d\033[0m │\n", z, l, m, h
+    printf "  └─────────────────────────────────────────────┘\n"
+    printf "\n"
+  }' "$sorted_file"
+
+  echo -e "  ${BOLD}详细结果${NC}"
+  echo -e "  ${DIM}┌──────────────────────┬──────────┬──────────┬──────────┐${NC}"
+  echo -e "  ${DIM}│ 省份            运营商 │ 丢包率   │ 收包     │ 延迟     │${NC}"
+  echo -e "  ${DIM}├──────────────────────┼──────────┼──────────┼──────────┤${NC}"
+
+  # 按运营商+省份排序展示
+  sort -t'|' -k3,3 -k2,2 "$sorted_file" | while IFS='|' read -r status prov isp host ip snd rcv loss lat; do
+    [ "$status" = "FAIL" ] && {
+      printf "  ${DIM}│${NC} ${RED}●${NC} ${CYAN}%-8s${NC} %-4s ${DIM}│${NC} ${RED}DNS/失败${NC}     ${DIM}│${NC} %4s/%-3s ${DIM}│${NC} %6sms ${DIM}│${NC}\n" "$prov" "$isp" "-" "-" "-"
+      continue
+    }
+
+    local lv
+    lv=$(awk -v x="$loss" 'BEGIN { printf "%d", x }' 2>/dev/null)
+    lv=${lv:-0}
+
+    if   [ "$lv" -eq 0 ]; then local icon="${GREEN}●${NC}"
+    elif [ "$lv" -le 5 ]; then local icon="${YELLOW}●${NC}"
+    elif [ "$lv" -le 20 ]; then local icon="${MAGENTA}●${NC}"
+    else                       local icon="${RED}●${NC}"
+    fi
+
+    local ld
+    ld=$(loss_color "$loss")
+
+    printf "  ${DIM}│${NC} $icon ${CYAN}%-8s${NC} %-4s ${DIM}│${NC} %8b ${DIM}│${NC} %4s/%-3s ${DIM}│${NC} %6sms ${DIM}│${NC}\n" \
+      "$prov" "$isp" "$ld" "$rcv" "$snd" "$lat"
+  done
+
+  echo -e "  ${DIM}└──────────────────────┴──────────┴──────────┴──────────┘${NC}"
+  echo ""
+
+  echo -e "  ${DIM}图例: ${GREEN}●零丢包${NC}  ${YELLOW}●≤5%${NC}  ${MAGENTA}●≤20%${NC}  ${RED}●>20%${NC}"
+  echo -e "  ${DIM}CSV: $CSV${NC}"
+  echo ""
+
+  rm -f "$sorted_file"
+}
+
+main
