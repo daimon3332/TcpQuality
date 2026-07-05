@@ -156,6 +156,7 @@ Zstatic CDN 节点 TCP 丢包探测脚本
 选项:
   -h, --help        显示帮助信息并退出
   -c, --count NUM   设置每节点发包数，默认 ${PACKETS}
+  --count=NUM       同上，设置每节点发包数
 
 示例:
   bash <(curl -sL https://raw.githubusercontent.com/zhangzjjjjjj/nping-cdn-test/main/nping_tui.sh) -c 100
