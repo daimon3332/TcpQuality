@@ -369,7 +369,7 @@ main() {
 
   # 收集结果并写入 CSV
   local report_time
-  report_time=$(date '+%Y-%m-%d %H:%M:%S %Z')
+  report_time=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S CST（北京时间）')
   local CSV="/tmp/zstatic_nping_$(date +%Y%m%d_%H%M%S).csv"
   printf '\xEF\xBB\xBF' > "$CSV"
   echo "省份,运营商,域名,IP,状态,发送,收到,丢包率(%),平均延迟ms" >> "$CSV"
@@ -393,17 +393,16 @@ main() {
 
   # 用 awk 做统计（避免 bash 浮点/空值问题）
   awk -F'|' '
-  BEGIN { z=0; l=0; m=0; h=0; }
+  BEGIN { z=0; y=0; h=0; }
   $1 == "OK" {
     v = int($8 + 0);
     if      (v == 0)  z++
-    else if (v <= 5)  l++
-    else if (v <= 20) m++
+    else if (v <= 20) y++
     else              h++
   }
   END {
     printf "  \033[1m统计摘要\033[0m\n"
-    printf "  \033[0;32m零丢包:%3d\033[0m    \033[0;33m1-5%%:%3d\033[0m    \033[0;35m6-20%%:%3d\033[0m    \033[0;31m>20%%:%3d\033[0m\n", z, l, m, h
+    printf "  \033[0;32m零丢包:%3d\033[0m    \033[0;33m1-20%%:%3d\033[0m    \033[0;31m>20%%:%3d\033[0m\n", z, y, h
     printf "\n"
   }' "$sorted_file"
 
