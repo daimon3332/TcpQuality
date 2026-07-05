@@ -278,7 +278,7 @@ show_provider_summary() {
 }
 
 print_header() {
-  echo -e "${BOLD}${CYAN}ibsgss TCP 重传检测${NC}"
+  echo -e "${BOLD}${CYAN}TCP 重传检测--最贴近你上网的综合体验${NC}"
   echo -e "${DIM}特价VPS补货TG频道：ibsgss | 感谢 Zstatic CDN 节点${NC}"
   echo -e "${DIM}------------------------------------------------------------${NC}"
 }
