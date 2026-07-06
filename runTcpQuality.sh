@@ -23,13 +23,25 @@ check_nping() {
   fi
   echo -e "${YELLOW}[!] nping 未安装，正在自动安装...${NC}"
   if command -v apt-get &>/dev/null; then
-    apt-get update -qq && apt-get install -y -qq nmap 2>/dev/null
+    if apt-get update -qq && apt-get install -y -qq nmap 2>/dev/null; then :; fi
   elif command -v dnf &>/dev/null; then
-    dnf install -y -q nmap 2>/dev/null
+    if ! dnf install -y -q nmap 2>/dev/null; then
+      echo -e "${YELLOW}[!] 默认软件源未提供 nmap，正在尝试启用 EPEL...${NC}"
+      if dnf install -y -q epel-release 2>/dev/null && dnf install -y -q nmap 2>/dev/null; then :; fi
+    fi
   elif command -v yum &>/dev/null; then
-    yum install -y -q nmap 2>/dev/null
+    if ! yum install -y -q nmap 2>/dev/null; then
+      echo -e "${YELLOW}[!] 默认软件源未提供 nmap，正在尝试启用 EPEL...${NC}"
+      if yum install -y -q epel-release 2>/dev/null && yum install -y -q nmap 2>/dev/null; then :; fi
+    fi
+  elif command -v apk &>/dev/null; then
+    if ! apk add --no-cache nmap-nping 2>/dev/null; then
+      if apk add --no-cache nmap 2>/dev/null; then :; fi
+    fi
+  elif command -v pacman &>/dev/null; then
+    if pacman -Sy --noconfirm nmap 2>/dev/null; then :; fi
   elif command -v brew &>/dev/null; then
-    brew install nmap 2>/dev/null
+    if brew install nmap 2>/dev/null; then :; fi
   else
     echo -e "${RED}[X] 无法自动安装 nping，请手动安装 nmap 包${NC}"
     exit 1
@@ -49,14 +61,19 @@ check_dig() {
   fi
   echo -e "${YELLOW}[!] dig 未安装，正在自动安装...${NC}"
   if command -v apt-get &>/dev/null; then
-    apt-get update -qq && apt-get install -y -qq dnsutils 2>/dev/null
+    if apt-get update -qq && apt-get install -y -qq dnsutils 2>/dev/null; then :; fi
   elif command -v dnf &>/dev/null; then
-    dnf install -y -q bind-utils 2>/dev/null
+    if dnf install -y -q bind-utils 2>/dev/null; then :; fi
   elif command -v yum &>/dev/null; then
-    yum install -y -q bind-utils 2>/dev/null
+    if yum install -y -q bind-utils 2>/dev/null; then :; fi
+  elif command -v apk &>/dev/null; then
+    if apk add --no-cache bind-tools 2>/dev/null; then :; fi
+  elif command -v pacman &>/dev/null; then
+    if pacman -Sy --noconfirm bind 2>/dev/null; then :; fi
   elif command -v brew &>/dev/null; then
-    brew install bind 2>/dev/null
-    export PATH="$(brew --prefix bind)/bin:$PATH"
+    if brew install bind 2>/dev/null; then
+      export PATH="$(brew --prefix bind)/bin:$PATH"
+    fi
   else
     echo -e "${RED}[X] 无法自动安装 dig，请手动安装 dnsutils、bind-utils 或 bind${NC}"
     exit 1
@@ -204,6 +221,8 @@ TcpQuality 节点 TCP 丢包探测脚本
 安装提示:
   - Debian/Ubuntu: sudo apt-get install -y nmap dnsutils
   - RHEL/Fedora:   sudo dnf install -y nmap bind-utils
+  - Alpine Linux:  sudo apk add nmap-nping bind-tools
+  - Arch Linux:    sudo pacman -S nmap bind
   - macOS:         brew install nmap bind
 
 说明:
