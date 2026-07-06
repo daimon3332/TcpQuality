@@ -705,6 +705,11 @@ main() {
   clear
   print_header
 
+  if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}[X] 运行权限不足，请切换到 root 用户后运行${NC}"
+    exit 1
+  fi
+
   check_nping
   check_dig
 
