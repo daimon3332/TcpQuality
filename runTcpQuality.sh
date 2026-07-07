@@ -293,7 +293,7 @@ TcpQuality 节点 TCP 丢包探测脚本
   - 节点范围: 全国 TcpQuality IPv4 节点；检测到可用 IPv6 时增加 IPv6 节点
   - 协议选择: 可使用 -v4/--v4 或 -v6/--v6 限定 IP 版本；--all 会探测全部可用协议
   - 指定教育网参数时: 在三网基础上增加 CERNET 和 CERNET2
-  - 探测方式: 每节点发送 ${PACKETS} 个裸 TCP SYN 包，无内核重传
+  - 探测方式: 每节点单发 ${PACKETS} 次裸 TCP SYN 包，无内核重传
   - 并发数量: ${PARALLEL}
   - DNS 解析: 使用系统 DNS
   - 目标端口: 80/tcp
@@ -753,38 +753,54 @@ test_one() {
   fi
 
   local raw nping_rc iface source_ip source_mac dest_mac route_data
-  local -a nping_args=(--tcp -p "$port" --flags syn -c "$PACKETS" --delay 1s "$ip")
+  local -a nping_base_args=(--tcp -p "$port" --flags syn)
   if [ "$family" = "6" ]; then
     if ! route_data=$(get_ipv6_route "$ip"); then
       echo "FAIL|$prov|$isp|$host|$ip|0|0|100.00|IPV6_ROUTE_ERROR" > "$outfile"
       return
     fi
     IFS='|' read -r iface source_ip source_mac dest_mac <<< "$route_data"
-    nping_args=(-6 -e "$iface" -S "$source_ip" --source-mac "$source_mac" --dest-mac "$dest_mac" "${nping_args[@]}")
+    nping_base_args=(-6 -e "$iface" -S "$source_ip" --source-mac "$source_mac" --dest-mac "$dest_mac" "${nping_base_args[@]}")
   fi
-  if raw=$(nping "${nping_args[@]}" 2>&1); then
-    nping_rc=0
+
+  local sent=0 rcvd=0 loss_pct avg_rtt rtt_sum="0" one_sent one_rcvd one_rtt one_success i
+  for ((i = 1; i <= PACKETS; i++)); do
+    if raw=$(nping "${nping_base_args[@]}" -c 1 "$ip" 2>&1); then
+      nping_rc=0
+    else
+      nping_rc=$?
+    fi
+
+    one_sent=$(printf "%s\n" "$raw" | sed -nE 's/.*sent:[[:space:]]*([0-9]+).*/\1/p' | head -1)
+    one_rcvd=$(printf "%s\n" "$raw" | sed -nE 's/.*Rcvd:[[:space:]]*([0-9]+).*/\1/p' | head -1)
+    one_rtt=$(printf "%s\n" "$raw" | sed -nE 's/.*Avg rtt:[[:space:]]*([0-9.]+).*/\1/p' | head -1)
+
+    if [ "$nping_rc" -ne 0 ] ||
+       ! [[ "$one_sent" =~ ^[0-9]+$ ]] || [ "$one_sent" -ne 1 ] ||
+       ! [[ "$one_rcvd" =~ ^[0-9]+$ ]]; then
+      echo "FAIL|$prov|$isp|$host|$ip|0|0|100.00|NPING_ERROR" > "$outfile"
+      return
+    fi
+
+    sent=$((sent + one_sent))
+    one_success=0
+    if [ "$one_rcvd" -gt 0 ]; then
+      if ! [[ "$one_rtt" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "FAIL|$prov|$isp|$host|$ip|0|0|100.00|NPING_ERROR" > "$outfile"
+        return
+      fi
+      one_success=1
+      rcvd=$((rcvd + one_success))
+      rtt_sum=$(awk -v a="$rtt_sum" -v b="$one_rtt" 'BEGIN { printf "%.6f", a + b }')
+    fi
+  done
+
+  loss_pct=$(awk -v sent="$sent" -v rcvd="$rcvd" 'BEGIN { if (sent == 0) print "100.00"; else printf "%.2f", (sent - rcvd) * 100 / sent }')
+  if [ "$rcvd" -gt 0 ]; then
+    avg_rtt=$(awk -v sum="$rtt_sum" -v rcvd="$rcvd" 'BEGIN { printf "%.3f", sum / rcvd }')
   else
-    nping_rc=$?
+    avg_rtt=0
   fi
-
-  local sent rcvd loss_pct avg_rtt
-  sent=$(printf "%s\n" "$raw" | sed -nE 's/.*sent:[[:space:]]*([0-9]+).*/\1/p' | head -1)
-  rcvd=$(printf "%s\n" "$raw" | sed -nE 's/.*Rcvd:[[:space:]]*([0-9]+).*/\1/p' | head -1)
-  loss_pct=$(printf "%s\n" "$raw" | sed -nE 's/.*\(([0-9.]+)%\).*/\1/p' | head -1)
-  avg_rtt=$(printf "%s\n" "$raw" | sed -nE 's/.*Avg rtt:[[:space:]]*([0-9.]+).*/\1/p' | head -1)
-
-  if [ "$nping_rc" -ne 0 ] ||
-     ! [[ "$sent" =~ ^[0-9]+$ ]] || [ "$sent" -ne "$PACKETS" ] ||
-     ! [[ "$rcvd" =~ ^[0-9]+$ ]] ||
-     ! [[ "$loss_pct" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
-     { [ "$rcvd" -gt 0 ] && ! [[ "$avg_rtt" =~ ^[0-9]+([.][0-9]+)?$ ]]; }; then
-    echo "FAIL|$prov|$isp|$host|$ip|0|0|100.00|NPING_ERROR" > "$outfile"
-    return
-  fi
-
-  avg_rtt=${avg_rtt:-0}
-
   echo "OK|$prov|$isp|$host|$ip|$sent|$rcvd|$loss_pct|$avg_rtt" > "$outfile"
 }
 
