@@ -257,13 +257,16 @@ PACKETS=30
 NODE_TOTAL=${#NODES[@]}
 TOTAL=$NODE_TOTAL
 PARALLEL=16
-TEST_CERNET=0
-TEST_ALL=0
+TEST_CDN=0
+TEST_EDU=0
+SELECT_CM=0
+SELECT_CU=0
+SELECT_CT=0
 ONLY_IPV4=0
 ONLY_IPV6=0
 INTERACTIVE=1
-TARGET_SCOPE=all
 TARGET_PORT=80
+PROVINCE_FILTER=
 RESULT_DIR=$(mktemp -d)
 trap "rm -rf $RESULT_DIR" EXIT
 
@@ -285,19 +288,27 @@ Daimon的TCP重传检测
   -p, --parallel NUM
                      设置并行节点数，范围 1-31，默认 ${PARALLEL}
   --parallel=NUM    同上，设置并行节点数
-  -v4, --v4         仅探测 IPv4
-  -v6, --v6         仅探测 IPv6
-  --cernet          在三网基础上增加 CERNET IPv4 和 CERNET2 IPv6
-  --all             探测三网、CERNET 和 CERNET2
+  -4, -v4, --v4     仅探测 IPv4
+  -6, -v6, --v6     仅探测 IPv6
+  --three           仅探测三网
+  --all             探测三网和教育网
+  --edu             仅探测教育网 CERNET IPv4 和 CERNET2 IPv6
+  --cm              探测移动，可与 --cu/--ct 组合
+  --cu              探测联通，可与 --cm/--ct 组合
+  --ct              探测电信，可与 --cm/--cu 组合
+  -fujian           仅探测福建教育网节点，需配合 --edu 或 --all
 
 示例:
   bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) -c 100
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --edu -fujian
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --cm --cu
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --all -v4
 
 默认行为:
   - 无参数运行: 进入交互式脚本管理界面
-  - 节点范围: 全国 IPv4 节点；检测到可用 IPv6 时增加 IPv6 节点
-  - 协议选择: 可使用 -v4/--v4 或 -v6/--v6 限定 IP 版本；--all 会探测全部可用协议
-  - 指定教育网参数时: 在三网基础上增加 CERNET 和 CERNET2
+  - 带参数但未指定范围: 默认探测三网
+  - 协议选择: 默认探测当前 VPS 可用协议；-4/-v4/--v4 或 -6/-v6/--v6 可限定 IP 版本
+  - 指定单协议但当前 VPS 不支持时，直接退出
   - 探测方式: 每节点单发 ${PACKETS} 次裸 TCP SYN 包，无内核重传
   - 并发数量: ${PARALLEL}
   - DNS 解析: 使用系统 DNS
@@ -379,20 +390,50 @@ parse_args() {
         fi
         shift
         ;;
-      -v4|--v4)
+      -4|-v4|--v4)
         ONLY_IPV4=1
         shift
         ;;
-      -v6|--v6)
+      -6|-v6|--v6)
         ONLY_IPV6=1
         shift
         ;;
-      --cernet)
-        TEST_CERNET=1
+      --three)
+        TEST_CDN=1
+        SELECT_CM=1
+        SELECT_CU=1
+        SELECT_CT=1
         shift
         ;;
       --all)
-        TEST_ALL=1
+        TEST_CDN=1
+        TEST_EDU=1
+        SELECT_CM=1
+        SELECT_CU=1
+        SELECT_CT=1
+        shift
+        ;;
+      --edu)
+        TEST_EDU=1
+        shift
+        ;;
+      --cm)
+        TEST_CDN=1
+        SELECT_CM=1
+        shift
+        ;;
+      --cu)
+        TEST_CDN=1
+        SELECT_CU=1
+        shift
+        ;;
+      --ct)
+        TEST_CDN=1
+        SELECT_CT=1
+        shift
+        ;;
+      -fujian)
+        PROVINCE_FILTER=福建
         shift
         ;;
       *)
@@ -402,6 +443,16 @@ parse_args() {
         ;;
     esac
   done
+  if [ "$INTERACTIVE" -eq 0 ] && [ "$TEST_CDN" -eq 0 ] && [ "$TEST_EDU" -eq 0 ]; then
+    TEST_CDN=1
+    SELECT_CM=1
+    SELECT_CU=1
+    SELECT_CT=1
+  fi
+  if [ -n "$PROVINCE_FILTER" ] && [ "$TEST_EDU" -ne 1 ]; then
+    echo -e "${RED}[X] -fujian 需要配合 --edu 或 --all 使用${NC}" >&2
+    exit 1
+  fi
 }
 
 # ===================== 工具函数 =====================
@@ -445,8 +496,7 @@ show_progress() {
 
 show_provider_summary() {
   local file="$1"
-  local scope="${2:-all}"
-  awk -F'|' -v scope="$scope" -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v cyan="$CYAN" -v dim="$DIM" -v bold="$BOLD" -v nc="$NC" '
+  awk -F'|' -v show_ct="$SELECT_CT" -v show_cu="$SELECT_CU" -v show_cm="$SELECT_CM" -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v cyan="$CYAN" -v dim="$DIM" -v bold="$BOLD" -v nc="$NC" '
   function compact_loss(v) {
     return int(v + 0.5)
   }
@@ -477,20 +527,19 @@ show_provider_summary() {
     data[prov SUBSEP isp] = cell(status, loss, lat, rcv)
   }
   END {
-    if (scope == "all") {
-      printf "  %s%s三网概览%s %s(电信 | 联通 | 移动)%s\n", bold, cyan, nc, dim, nc
-      for (i = 1; i <= n; i++) {
-        prov = order[i]
-        prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
-        printf "  %s%s%s%s  电信 %s  联通 %s  移动 %s\n", cyan, prov, nc, prov_pad, data[prov SUBSEP "电信"], data[prov SUBSEP "联通"], data[prov SUBSEP "移动"]
-      }
-    } else {
-      printf "  %s%s%s概览%s\n", bold, cyan, scope, nc
-      for (i = 1; i <= n; i++) {
-        prov = order[i]
-        prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
-        printf "  %s%s%s%s  %s %s\n", cyan, prov, nc, prov_pad, scope, data[prov SUBSEP scope]
-      }
+    title = ""
+    if (show_ct == 1) title = title "电信 "
+    if (show_cu == 1) title = title "联通 "
+    if (show_cm == 1) title = title "移动 "
+    printf "  %s%s三网概览%s %s(%s)%s\n", bold, cyan, nc, dim, title, nc
+    for (i = 1; i <= n; i++) {
+      prov = order[i]
+      prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
+      printf "  %s%s%s%s", cyan, prov, nc, prov_pad
+      if (show_ct == 1) printf "  电信 %s", data[prov SUBSEP "电信"]
+      if (show_cu == 1) printf "  联通 %s", data[prov SUBSEP "联通"]
+      if (show_cm == 1) printf "  移动 %s", data[prov SUBSEP "移动"]
+      printf "\n"
     }
     printf "  %s颜色: %s正常%s  %s延迟151-240ms或1-20%%重传%s  %s延迟>240ms或>20%%重传，或失败%s\n\n", dim, green, dim, yellow, dim, red, dim
   }' "$file"
@@ -511,7 +560,7 @@ show_family_results() {
     printf "  \033[1m\033[0;36m%s 统计摘要\033[0m  ", family
     printf "\033[0;32m零丢包:%3d\033[0m    \033[0;33m1-20%%:%3d\033[0m    \033[0;31m>20%%:%3d\033[0m\n\n", z, y, h
   }' "$file"
-  show_provider_summary "$file" "$TARGET_SCOPE"
+  show_provider_summary "$file"
 }
 
 show_education_results() {
@@ -554,51 +603,6 @@ show_education_results() {
   }' "$file"
 }
 
-show_education_combined() {
-  local ipv4_file="$1" ipv6_file="$2"
-  awk -F'|' -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v cyan="$CYAN" -v dim="$DIM" -v bold="$BOLD" -v nc="$NC" '
-  function compact_loss(v) {
-    return int(v + 0.5)
-  }
-  function cell(status, loss, lat,   l, v, color) {
-    if (status != "OK") return red sprintf("%12s", "失败") nc
-    l = loss + 0
-    v = lat + 0
-    if      (l > 20 || v > 240) color = red
-    else if (l > 0  || v > 150) color = yellow
-    else                        color = green
-    return color sprintf("%4.0fms / %4s", v, compact_loss(loss) "%") nc
-  }
-  {
-    generation = (FILENAME == ARGV[1]) ? 1 : 2
-    status = $1
-    prov = $2
-    loss = $8
-    lat = $9
-    result[prov SUBSEP generation] = cell(status, loss, lat)
-    if (!(prov in seen)) {
-      seen[prov] = 1
-      order[++n] = prov
-    }
-    if (status != "OK") h[generation]++
-    else if (int(loss + 0) == 0) z[generation]++
-    else if (int(loss + 0) <= 20) y[generation]++
-    else h[generation]++
-  }
-  END {
-    printf "  %s%s教育网 CERNET-IPv4 和 CERNET2-IPv6 统计摘要%s\n", bold, cyan, nc
-    printf "  CERNET-IPv4  %s零丢包:%3d%s  %s1-20%%:%3d%s  %s>20%%:%3d%s\n", green, z[1], nc, yellow, y[1], nc, red, h[1], nc
-    printf "  CERNET2-IPv6 %s零丢包:%3d%s  %s1-20%%:%3d%s  %s>20%%:%3d%s\n\n", green, z[2], nc, yellow, y[2], nc, red, h[2], nc
-    printf "  %s%s教育网概览%s %s(CERNET-IPv4 | CERNET2-IPv6)%s\n", bold, cyan, nc, dim, nc
-    for (i = 1; i <= n; i++) {
-      prov = order[i]
-      prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
-      printf "  %s%s%s%s  CERNET-IPv4 %s  CERNET2-IPv6 %s\n", cyan, prov, nc, prov_pad, result[prov SUBSEP 1], result[prov SUBSEP 2]
-    }
-    printf "  %s颜色: %s正常%s  %s延迟151-240ms或1-20%%重传%s  %s延迟>240ms或>20%%重传，或失败%s\n\n", dim, green, dim, yellow, dim, red, dim
-  }' "$ipv4_file" "$ipv6_file"
-}
-
 print_header() {
   echo -e "${BOLD}${CYAN}Daimon的TCP重传检测${NC}"
   echo -e "${DIM}------------------------------------------------------------${NC}"
@@ -622,16 +626,18 @@ configure_interactive() {
     echo "    3. 移动"
     echo "    4. 联通"
     echo "    5. 教育网"
+    echo "    6. 三网 + 教育网"
     echo "    0. 退出"
     echo ""
     read -r -p "  输入序号 [默认: 1]: " choice
     choice=${choice:-1}
     case "$choice" in
-      1) TARGET_SCOPE=all; break ;;
-      2) TARGET_SCOPE=电信; break ;;
-      3) TARGET_SCOPE=移动; break ;;
-      4) TARGET_SCOPE=联通; break ;;
-      5) TARGET_SCOPE=edu; break ;;
+      1) TEST_CDN=1; SELECT_CM=1; SELECT_CU=1; SELECT_CT=1; break ;;
+      2) TEST_CDN=1; SELECT_CT=1; break ;;
+      3) TEST_CDN=1; SELECT_CM=1; break ;;
+      4) TEST_CDN=1; SELECT_CU=1; break ;;
+      5) TEST_EDU=1; break ;;
+      6) TEST_CDN=1; TEST_EDU=1; SELECT_CM=1; SELECT_CU=1; SELECT_CT=1; break ;;
       0) exit 0 ;;
       *) echo -e "  ${RED}[X] 无效选择${NC}"; pause_enter ;;
     esac
@@ -909,8 +915,8 @@ main() {
   check_nping
   check_dig
 
-  local ipv4_enabled=0 ipv6_enabled=0 test_cdn=1 test_edu=0 want_ipv4=1 want_ipv6=1
-  local has_ipv4=0 has_ipv6=0 cdn_count=0
+  local ipv4_enabled=0 ipv6_enabled=0 want_ipv4=1 want_ipv6=1
+  local has_ipv4=0 has_ipv6=0 cdn_count=0 cernet_count=0 cernet2_count=0
   if ipv4_available; then has_ipv4=1; fi
   if ipv6_available; then has_ipv6=1; fi
 
@@ -923,6 +929,15 @@ main() {
     configure_interactive "$has_ipv4" "$has_ipv6"
     clear
     print_header
+  fi
+
+  if [ "$ONLY_IPV4" -eq 1 ] && [ "$has_ipv4" -eq 0 ]; then
+    echo -e "${RED}[X] 已指定 IPv4，但当前 VPS 不支持 IPv4${NC}"
+    exit 1
+  fi
+  if [ "$ONLY_IPV6" -eq 1 ] && [ "$has_ipv6" -eq 0 ]; then
+    echo -e "${RED}[X] 已指定 IPv6，但当前 VPS 不支持 IPv6${NC}"
+    exit 1
   fi
 
   if [ "$ONLY_IPV4" -eq 1 ] && [ "$ONLY_IPV6" -eq 0 ]; then
@@ -941,38 +956,44 @@ main() {
     echo -e "${DIM}[i] 已按参数跳过 IPv4${NC}"
   fi
 
-  if [ "$TARGET_SCOPE" = "edu" ]; then
-    test_cdn=0
-    test_edu=1
-  elif [ "$TEST_CERNET" -eq 1 ] || [ "$TEST_ALL" -eq 1 ]; then
-    test_edu=1
+  if [ "$TEST_CDN" -eq 1 ]; then
+    local count_entry count_prov count_isp
+    for count_entry in "${NODES[@]}"; do
+      read -r count_prov count_isp _ <<< "$count_entry"
+      if { [ "$count_isp" = "移动" ] && [ "$SELECT_CM" -eq 1 ]; } ||
+         { [ "$count_isp" = "联通" ] && [ "$SELECT_CU" -eq 1 ]; } ||
+         { [ "$count_isp" = "电信" ] && [ "$SELECT_CT" -eq 1 ]; }; then
+        cdn_count=$((cdn_count + 1))
+      fi
+    done
   fi
-
-  if [ "$test_cdn" -eq 1 ]; then
-    if [ "$TARGET_SCOPE" = "all" ]; then
-      cdn_count=$NODE_TOTAL
-    else
-      local count_entry count_isp
-      for count_entry in "${NODES[@]}"; do
-        read -r _ count_isp _ <<< "$count_entry"
-        if [ "$count_isp" = "$TARGET_SCOPE" ]; then
-          cdn_count=$((cdn_count + 1))
-        fi
-      done
-    fi
+  if [ "$TEST_EDU" -eq 1 ]; then
+    local edu_entry edu_prov
+    for edu_entry in "${CERNET_NODES[@]}"; do
+      read -r edu_prov _ _ <<< "$edu_entry"
+      if [ -z "$PROVINCE_FILTER" ] || [ "$edu_prov" = "$PROVINCE_FILTER" ]; then
+        cernet_count=$((cernet_count + 1))
+      fi
+    done
+    for edu_entry in "${CERNET2_NODES[@]}"; do
+      read -r edu_prov _ _ <<< "$edu_entry"
+      if [ -z "$PROVINCE_FILTER" ] || [ "$edu_prov" = "$PROVINCE_FILTER" ]; then
+        cernet2_count=$((cernet2_count + 1))
+      fi
+    done
   fi
 
   TOTAL=0
-  if [ "$ipv4_enabled" -eq 1 ] && [ "$test_cdn" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
-  if [ "$ipv4_enabled" -eq 1 ] && [ "$test_edu" -eq 1 ]; then TOTAL=$((TOTAL + ${#CERNET_NODES[@]})); fi
+  if [ "$ipv4_enabled" -eq 1 ] && [ "$TEST_CDN" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
+  if [ "$ipv4_enabled" -eq 1 ] && [ "$TEST_EDU" -eq 1 ]; then TOTAL=$((TOTAL + cernet_count)); fi
   if [ "$want_ipv6" -eq 1 ] && [ "$has_ipv6" -eq 1 ]; then
     ipv6_enabled=1
-    if [ "$test_cdn" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
-    if [ "$test_edu" -eq 1 ]; then TOTAL=$((TOTAL + ${#CERNET2_NODES[@]})); fi
+    if [ "$TEST_CDN" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
+    if [ "$TEST_EDU" -eq 1 ]; then TOTAL=$((TOTAL + cernet2_count)); fi
     echo -e "${GREEN}[√] 检测到可用 IPv6${NC}"
   elif [ "$want_ipv6" -eq 1 ]; then
     echo -e "${YELLOW}[!] 未检测到可用 IPv6，已跳过 IPv6${NC}"
-    if [ "$test_edu" -eq 1 ]; then
+    if [ "$TEST_EDU" -eq 1 ]; then
       echo -e "${YELLOW}[!] 二代教育网需要 IPv6，已跳过${NC}"
     fi
   fi
@@ -992,13 +1013,15 @@ main() {
   show_progress
   local family entry prov isp host fixed_ip
   local -a families=()
-  if [ "$test_cdn" -eq 1 ]; then
+  if [ "$TEST_CDN" -eq 1 ]; then
     if [ "$ipv4_enabled" -eq 1 ]; then families+=(4); fi
     if [ "$ipv6_enabled" -eq 1 ]; then families+=(6); fi
     for family in "${families[@]}"; do
       for entry in "${NODES[@]}"; do
         read -r prov isp host <<< "$entry"
-        if [ "$TARGET_SCOPE" != "all" ] && [ "$isp" != "$TARGET_SCOPE" ]; then
+        if ! { [ "$isp" = "移动" ] && [ "$SELECT_CM" -eq 1 ]; } &&
+           ! { [ "$isp" = "联通" ] && [ "$SELECT_CU" -eq 1 ]; } &&
+           ! { [ "$isp" = "电信" ] && [ "$SELECT_CT" -eq 1 ]; }; then
           continue
         fi
         if [ "$family" = "6" ]; then
@@ -1014,9 +1037,12 @@ main() {
       done
     done
   fi
-  if [ "$test_edu" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ]; then
+  if [ "$TEST_EDU" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ]; then
     for entry in "${CERNET_NODES[@]}"; do
       read -r prov host fixed_ip <<< "$entry"
+      if [ -n "$PROVINCE_FILTER" ] && [ "$prov" != "$PROVINCE_FILTER" ]; then
+        continue
+      fi
       idx=$((idx + 1))
       while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$PARALLEL" ]; do
         show_progress
@@ -1026,9 +1052,12 @@ main() {
       show_progress
     done
   fi
-  if [ "$test_edu" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
+  if [ "$TEST_EDU" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
     for entry in "${CERNET2_NODES[@]}"; do
       read -r prov host fixed_ip <<< "$entry"
+      if [ -n "$PROVINCE_FILTER" ] && [ "$prov" != "$PROVINCE_FILTER" ]; then
+        continue
+      fi
       idx=$((idx + 1))
       while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$PARALLEL" ]; do
         show_progress
@@ -1055,7 +1084,7 @@ main() {
   sorted_v6=$(mktemp)
   sorted_cernet=$(mktemp)
   sorted_cernet2=$(mktemp)
-  if [ "$test_cdn" -eq 1 ]; then
+  if [ "$TEST_CDN" -eq 1 ]; then
     for family in "${families[@]}"; do
       if [ "$family" = "4" ]; then sorted_file="$sorted_v4"; else sorted_file="$sorted_v6"; fi
       for i in $(seq 1 "$TOTAL"); do
@@ -1067,7 +1096,7 @@ main() {
       done
     done
   fi
-  if [ "$test_edu" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ]; then
+  if [ "$TEST_EDU" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ]; then
     for i in $(seq 1 "$TOTAL"); do
       f="${RESULT_DIR}/cernet_${i}"
       if [ -f "$f" ]; then
@@ -1076,7 +1105,7 @@ main() {
       fi
     done
   fi
-  if [ "$test_edu" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
+  if [ "$TEST_EDU" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
     for i in $(seq 1 "$TOTAL"); do
       f="${RESULT_DIR}/cernet2_${i}"
       if [ -f "$f" ]; then
@@ -1092,7 +1121,7 @@ main() {
   echo -e "  ${DIM}报告时间：${report_time}${NC}"
   echo ""
 
-  if [ "$test_cdn" -eq 1 ]; then
+  if [ "$TEST_CDN" -eq 1 ]; then
     if [ "$ipv4_enabled" -eq 1 ]; then
       show_family_results "IPv4" "$sorted_v4"
     fi
@@ -1100,15 +1129,11 @@ main() {
       show_family_results "IPv6" "$sorted_v6"
     fi
   fi
-  if [ "$test_edu" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
-    show_education_combined "$sorted_cernet" "$sorted_cernet2"
-  else
-    if [ "$test_edu" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ]; then
-      show_education_results "CERNET-IPv4" "$sorted_cernet"
-    fi
-    if [ "$test_edu" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
-      show_education_results "CERNET2-IPv6" "$sorted_cernet2"
-    fi
+  if [ "$TEST_EDU" -eq 1 ] && [ "$ipv4_enabled" -eq 1 ]; then
+    show_education_results "CERNET-IPv4" "$sorted_cernet"
+  fi
+  if [ "$TEST_EDU" -eq 1 ] && [ "$ipv6_enabled" -eq 1 ]; then
+    show_education_results "CERNET2-IPv6" "$sorted_cernet2"
   fi
 
   echo ""
