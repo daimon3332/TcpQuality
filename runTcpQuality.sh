@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# TcpQuality 节点 TCP 丢包探测脚本
-# 用法: bash <(curl -sL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh)
+# Daimon的TCP重传检测
+# 用法: bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh)
 #
-# 每节点发送 60 个裸 TCP SYN 包，无内核重传
+# 每节点发送 30 个裸 TCP SYN 包，无内核重传
 # TUI 风格实时展示省份/运营商丢包率
 #
 
@@ -259,25 +259,29 @@ TOTAL=$NODE_TOTAL
 PARALLEL=16
 TEST_CERNET=0
 TEST_ALL=0
-UPLOAD_REPORT=1
 ONLY_IPV4=0
 ONLY_IPV6=0
-REPORT_API=${TCPQUALITY_REPORT_API:-https://tcpquality.ibsgss.uk/generate}
+INTERACTIVE=1
+TARGET_SCOPE=all
+TARGET_PORT=80
 RESULT_DIR=$(mktemp -d)
 trap "rm -rf $RESULT_DIR" EXIT
 
 # ===================== 参数与帮助 =====================
 show_help() {
   cat <<EOF
-TcpQuality 节点 TCP 丢包探测脚本
+Daimon的TCP重传检测
 
 用法:
-  bash <(curl -sL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh) [选项]
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh)
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) [选项]
 
 选项:
   -h, --help        显示帮助信息并退出
   -c, --count NUM   设置每节点发包数，默认 ${PACKETS}
   --count=NUM       同上，设置每节点发包数
+  --port NUM        设置 TCP 目标端口，默认 ${TARGET_PORT}
+  --port=NUM        同上，设置 TCP 目标端口
   -p, --parallel NUM
                      设置并行节点数，范围 1-31，默认 ${PARALLEL}
   --parallel=NUM    同上，设置并行节点数
@@ -287,19 +291,18 @@ TcpQuality 节点 TCP 丢包探测脚本
   --all             探测三网、CERNET 和 CERNET2
 
 示例:
-  bash <(curl -sL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh) -c 100
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) -c 100
 
 默认行为:
-  - 节点范围: 全国 TcpQuality IPv4 节点；检测到可用 IPv6 时增加 IPv6 节点
+  - 无参数运行: 进入交互式脚本管理界面
+  - 节点范围: 全国 IPv4 节点；检测到可用 IPv6 时增加 IPv6 节点
   - 协议选择: 可使用 -v4/--v4 或 -v6/--v6 限定 IP 版本；--all 会探测全部可用协议
   - 指定教育网参数时: 在三网基础上增加 CERNET 和 CERNET2
   - 探测方式: 每节点单发 ${PACKETS} 次裸 TCP SYN 包，无内核重传
   - 并发数量: ${PARALLEL}
   - DNS 解析: 使用系统 DNS
-  - 目标端口: 80/tcp
+  - 目标端口: ${TARGET_PORT}/tcp
   - 结果展示: 统计摘要、三网概览
-  - CSV 输出: /tmp/zstatic_nping_YYYYmmdd_HHMMSS.csv
-  - 报告上传: 默认生成并上传 SVG 报告，返回公开链接
 
 依赖:
   - nping: 随 nmap 安装
@@ -319,6 +322,9 @@ EOF
 }
 
 parse_args() {
+  if [ $# -gt 0 ]; then
+    INTERACTIVE=0
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       -h|--help)
@@ -337,6 +343,22 @@ parse_args() {
         PACKETS="${1#*=}"
         if ! [[ "$PACKETS" =~ ^[0-9]+$ ]] || [ "$PACKETS" -lt 1 ]; then
           echo -e "${RED}[X] 发包数必须是大于 0 的整数${NC}" >&2
+          exit 1
+        fi
+        shift
+        ;;
+      --port)
+        if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ] || [ "$2" -gt 65535 ]; then
+          echo -e "${RED}[X] 端口必须是 1-65535 之间的整数${NC}" >&2
+          exit 1
+        fi
+        TARGET_PORT="$2"
+        shift 2
+        ;;
+      --port=*)
+        TARGET_PORT="${1#*=}"
+        if ! [[ "$TARGET_PORT" =~ ^[0-9]+$ ]] || [ "$TARGET_PORT" -lt 1 ] || [ "$TARGET_PORT" -gt 65535 ]; then
+          echo -e "${RED}[X] 端口必须是 1-65535 之间的整数${NC}" >&2
           exit 1
         fi
         shift
@@ -423,7 +445,8 @@ show_progress() {
 
 show_provider_summary() {
   local file="$1"
-  awk -F'|' -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v cyan="$CYAN" -v dim="$DIM" -v bold="$BOLD" -v nc="$NC" '
+  local scope="${2:-all}"
+  awk -F'|' -v scope="$scope" -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v cyan="$CYAN" -v dim="$DIM" -v bold="$BOLD" -v nc="$NC" '
   function compact_loss(v) {
     return int(v + 0.5)
   }
@@ -454,11 +477,20 @@ show_provider_summary() {
     data[prov SUBSEP isp] = cell(status, loss, lat, rcv)
   }
   END {
-    printf "  %s%s三网概览%s %s(电信 | 联通 | 移动)%s\n", bold, cyan, nc, dim, nc
-    for (i = 1; i <= n; i++) {
-      prov = order[i]
-      prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
-      printf "  %s%s%s%s  电信 %s  联通 %s  移动 %s\n", cyan, prov, nc, prov_pad, data[prov SUBSEP "电信"], data[prov SUBSEP "联通"], data[prov SUBSEP "移动"]
+    if (scope == "all") {
+      printf "  %s%s三网概览%s %s(电信 | 联通 | 移动)%s\n", bold, cyan, nc, dim, nc
+      for (i = 1; i <= n; i++) {
+        prov = order[i]
+        prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
+        printf "  %s%s%s%s  电信 %s  联通 %s  移动 %s\n", cyan, prov, nc, prov_pad, data[prov SUBSEP "电信"], data[prov SUBSEP "联通"], data[prov SUBSEP "移动"]
+      }
+    } else {
+      printf "  %s%s%s概览%s\n", bold, cyan, scope, nc
+      for (i = 1; i <= n; i++) {
+        prov = order[i]
+        prov_pad = (prov == "黑龙江" || prov == "内蒙古") ? "  " : "    "
+        printf "  %s%s%s%s  %s %s\n", cyan, prov, nc, prov_pad, scope, data[prov SUBSEP scope]
+      }
     }
     printf "  %s颜色: %s正常%s  %s延迟151-240ms或1-20%%重传%s  %s延迟>240ms或>20%%重传，或失败%s\n\n", dim, green, dim, yellow, dim, red, dim
   }' "$file"
@@ -479,7 +511,7 @@ show_family_results() {
     printf "  \033[1m\033[0;36m%s 统计摘要\033[0m  ", family
     printf "\033[0;32m零丢包:%3d\033[0m    \033[0;33m1-20%%:%3d\033[0m    \033[0;31m>20%%:%3d\033[0m\n\n", z, y, h
   }' "$file"
-  show_provider_summary "$file"
+  show_provider_summary "$file" "$TARGET_SCOPE"
 }
 
 show_education_results() {
@@ -567,21 +599,111 @@ show_education_combined() {
   }' "$ipv4_file" "$ipv6_file"
 }
 
-terminal_link() {
-  local text="$1" url="$2"
-  if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
-    printf '\033]8;;%s\007%s\033]8;;\007' "$url" "$text"
-  else
-    printf "%s" "$text"
-  fi
+print_header() {
+  echo -e "${BOLD}${CYAN}Daimon的TCP重传检测${NC}"
+  echo -e "${DIM}------------------------------------------------------------${NC}"
 }
 
-print_header() {
-  echo -e "${BOLD}${CYAN}TcpQuality TCP 重传检测--最贴近你上网的综合体验${NC}"
-  printf "%b特价VPS补货TG频道：" "$DIM"
-  terminal_link "ibsgss" "https://t.me/ibsgss"
-  printf " | 感谢 Zstatic CDN 节点%b\n" "$NC"
-  echo -e "${DIM}------------------------------------------------------------${NC}"
+pause_enter() {
+  local _
+  read -r -p "按 Enter 继续..." _
+}
+
+configure_interactive() {
+  local ipv4_available_flag="$1" ipv6_available_flag="$2"
+  local choice port count
+
+  while true; do
+    clear
+    print_header
+    echo "  请选择测试范围："
+    echo "    1. 三网"
+    echo "    2. 电信"
+    echo "    3. 移动"
+    echo "    4. 联通"
+    echo "    5. 教育网"
+    echo "    0. 退出"
+    echo ""
+    read -r -p "  输入序号 [默认: 1]: " choice
+    choice=${choice:-1}
+    case "$choice" in
+      1) TARGET_SCOPE=all; break ;;
+      2) TARGET_SCOPE=电信; break ;;
+      3) TARGET_SCOPE=移动; break ;;
+      4) TARGET_SCOPE=联通; break ;;
+      5) TARGET_SCOPE=edu; break ;;
+      0) exit 0 ;;
+      *) echo -e "  ${RED}[X] 无效选择${NC}"; pause_enter ;;
+    esac
+  done
+
+  while true; do
+    clear
+    print_header
+    echo "  请选择 IP 协议："
+    if [ "$ipv4_available_flag" -eq 1 ]; then
+      echo "    1. IPv4"
+    else
+      echo "    1. IPv4（不可用）"
+    fi
+    if [ "$ipv6_available_flag" -eq 1 ]; then
+      echo "    2. IPv6"
+    else
+      echo "    2. IPv6（不可用）"
+    fi
+    echo "    3. 全部测试（仅测试当前 VPS 可用协议）"
+    echo "    0. 退出"
+    echo ""
+    read -r -p "  输入序号 [默认: 3]: " choice
+    choice=${choice:-3}
+    case "$choice" in
+      1)
+        if [ "$ipv4_available_flag" -eq 1 ]; then
+          ONLY_IPV4=1
+          ONLY_IPV6=0
+          break
+        fi
+        echo -e "  ${RED}[X] 当前 VPS 不支持 IPv4${NC}"
+        pause_enter
+        ;;
+      2)
+        if [ "$ipv6_available_flag" -eq 1 ]; then
+          ONLY_IPV4=0
+          ONLY_IPV6=1
+          break
+        fi
+        echo -e "  ${RED}[X] 当前 VPS 不支持 IPv6${NC}"
+        pause_enter
+        ;;
+      3)
+        ONLY_IPV4=0
+        ONLY_IPV6=0
+        break
+        ;;
+      0) exit 0 ;;
+      *) echo -e "  ${RED}[X] 无效选择${NC}"; pause_enter ;;
+    esac
+  done
+
+  while true; do
+    read -r -p "  目标端口 [默认: ${TARGET_PORT}]: " port
+    port=${port:-$TARGET_PORT}
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+      TARGET_PORT="$port"
+      break
+    fi
+    echo -e "  ${RED}[X] 端口必须是 1-65535 之间的整数${NC}"
+  done
+
+  while true; do
+    read -r -p "  每节点探测次数 [默认: ${PACKETS}]: " count
+    count=${count:-$PACKETS}
+    if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -ge 1 ]; then
+      PACKETS="$count"
+      break
+    fi
+    echo -e "  ${RED}[X] 次数必须是大于 0 的整数${NC}"
+  done
 }
 
 # 返回“出口网卡|源IPv6|源MAC|下一跳MAC”。
@@ -696,40 +818,6 @@ ipv4_available() {
   fi
 }
 
-upload_report() {
-  local csv="$1" report_time="${2:-}" response_file http_code report_url today_uses total_uses
-  if ! command -v curl &>/dev/null; then
-    echo -e "  ${YELLOW}[!] 未安装 curl，已跳过 SVG 报告上传${NC}"
-    return
-  fi
-
-  response_file=$(mktemp)
-  if ! http_code=$(curl -sS --connect-timeout 10 --max-time 30 --retry 2 \
-    -o "$response_file" -w '%{http_code}' \
-    -H 'Content-Type: text/csv; charset=utf-8' \
-    -H "X-Report-Time: $report_time" \
-    --data-binary "@$csv" "$REPORT_API"); then
-    echo -e "  ${YELLOW}[!] SVG 报告上传失败，本地 CSV 已保留${NC}"
-    rm -f "$response_file"
-    return
-  fi
-
-  if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
-    report_url=$(sed -nE 's/.*"url":"([^"]+)".*/\1/p' "$response_file" | head -1)
-    today_uses=$(sed -nE 's/.*"todayUses":([0-9]+).*/\1/p' "$response_file" | head -1)
-    total_uses=$(sed -nE 's/.*"totalUses":([0-9]+).*/\1/p' "$response_file" | head -1)
-  fi
-  if [ -n "$report_url" ]; then
-    echo -e "  ${WHITE}报告链接：${UNDERLINE}${report_url}${NC}"
-    if [ -n "$today_uses" ] && [ -n "$total_uses" ]; then
-      echo -e "  ${DIM}今日TCP脚本使用次数：${today_uses}；总使用次数：${total_uses}。感谢使用ibsgss网络质量检测脚本！${NC}"
-    fi
-  else
-    echo -e "  ${YELLOW}[!] SVG 报告上传失败（HTTP $http_code），本地 CSV 已保留${NC}"
-  fi
-  rm -f "$response_file"
-}
-
 # ===================== 单节点测试 =====================
 test_one() {
   local group="$1" family="$2" prov="$3" isp="$4" host="$5" idx="$6"
@@ -822,16 +910,28 @@ main() {
   check_dig
 
   local ipv4_enabled=0 ipv6_enabled=0 test_cdn=1 test_edu=0 want_ipv4=1 want_ipv6=1
-  if [ "$TEST_ALL" -eq 1 ]; then
-    want_ipv4=1
-    want_ipv6=1
-  elif [ "$ONLY_IPV4" -eq 1 ] && [ "$ONLY_IPV6" -eq 0 ]; then
+  local has_ipv4=0 has_ipv6=0 cdn_count=0
+  if ipv4_available; then has_ipv4=1; fi
+  if ipv6_available; then has_ipv6=1; fi
+
+  if [ "$has_ipv4" -eq 0 ] && [ "$has_ipv6" -eq 0 ]; then
+    echo -e "${RED}[X] 未检测到可用 IPv4 或 IPv6${NC}"
+    exit 1
+  fi
+
+  if [ "$INTERACTIVE" -eq 1 ]; then
+    configure_interactive "$has_ipv4" "$has_ipv6"
+    clear
+    print_header
+  fi
+
+  if [ "$ONLY_IPV4" -eq 1 ] && [ "$ONLY_IPV6" -eq 0 ]; then
     want_ipv6=0
   elif [ "$ONLY_IPV6" -eq 1 ] && [ "$ONLY_IPV4" -eq 0 ]; then
     want_ipv4=0
   fi
 
-  if [ "$want_ipv4" -eq 1 ] && ipv4_available; then
+  if [ "$want_ipv4" -eq 1 ] && [ "$has_ipv4" -eq 1 ]; then
     ipv4_enabled=1
     echo -e "${GREEN}[√] 检测到可用 IPv4${NC}"
   elif [ "$want_ipv4" -eq 1 ]; then
@@ -841,14 +941,33 @@ main() {
     echo -e "${DIM}[i] 已按参数跳过 IPv4${NC}"
   fi
 
-  if [ "$TEST_CERNET" -eq 1 ] || [ "$TEST_ALL" -eq 1 ]; then test_edu=1; fi
+  if [ "$TARGET_SCOPE" = "edu" ]; then
+    test_cdn=0
+    test_edu=1
+  elif [ "$TEST_CERNET" -eq 1 ] || [ "$TEST_ALL" -eq 1 ]; then
+    test_edu=1
+  fi
+
+  if [ "$test_cdn" -eq 1 ]; then
+    if [ "$TARGET_SCOPE" = "all" ]; then
+      cdn_count=$NODE_TOTAL
+    else
+      local count_entry count_isp
+      for count_entry in "${NODES[@]}"; do
+        read -r _ count_isp _ <<< "$count_entry"
+        if [ "$count_isp" = "$TARGET_SCOPE" ]; then
+          cdn_count=$((cdn_count + 1))
+        fi
+      done
+    fi
+  fi
 
   TOTAL=0
-  if [ "$ipv4_enabled" -eq 1 ] && [ "$test_cdn" -eq 1 ]; then TOTAL=$((TOTAL + NODE_TOTAL)); fi
+  if [ "$ipv4_enabled" -eq 1 ] && [ "$test_cdn" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
   if [ "$ipv4_enabled" -eq 1 ] && [ "$test_edu" -eq 1 ]; then TOTAL=$((TOTAL + ${#CERNET_NODES[@]})); fi
-  if [ "$want_ipv6" -eq 1 ] && ipv6_available; then
+  if [ "$want_ipv6" -eq 1 ] && [ "$has_ipv6" -eq 1 ]; then
     ipv6_enabled=1
-    if [ "$test_cdn" -eq 1 ]; then TOTAL=$((TOTAL + NODE_TOTAL)); fi
+    if [ "$test_cdn" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
     if [ "$test_edu" -eq 1 ]; then TOTAL=$((TOTAL + ${#CERNET2_NODES[@]})); fi
     echo -e "${GREEN}[√] 检测到可用 IPv6${NC}"
   elif [ "$want_ipv6" -eq 1 ]; then
@@ -864,7 +983,7 @@ main() {
     echo -e "${RED}[X] 没有可执行的探测任务${NC}"
     exit 1
   fi
-  echo -e "${DIM}  探测节点: $TOTAL  每节点发包: $PACKETS  并行: $PARALLEL  端口: 80/tcp${NC}"
+  echo -e "${DIM}  探测节点: $TOTAL  每节点发包: $PACKETS  并行: $PARALLEL  端口: ${TARGET_PORT}/tcp${NC}"
   echo ""
 
   # 并行测试
@@ -879,6 +998,9 @@ main() {
     for family in "${families[@]}"; do
       for entry in "${NODES[@]}"; do
         read -r prov isp host <<< "$entry"
+        if [ "$TARGET_SCOPE" != "all" ] && [ "$isp" != "$TARGET_SCOPE" ]; then
+          continue
+        fi
         if [ "$family" = "6" ]; then
           host=${host/-v4./-v6.}
         fi
@@ -887,7 +1009,7 @@ main() {
           show_progress
           sleep 0.2
         done
-        test_one "cdn${family}" "$family" "$prov" "$isp" "$host" "$idx" &
+        test_one "cdn${family}" "$family" "$prov" "$isp" "$host" "$idx" "" "$TARGET_PORT" &
         show_progress
       done
     done
@@ -900,7 +1022,7 @@ main() {
         show_progress
         sleep 0.2
       done
-      test_one "cernet" 4 "$prov" "教育网" "$host" "$idx" "$fixed_ip" 80 &
+      test_one "cernet" 4 "$prov" "教育网" "$host" "$idx" "$fixed_ip" "$TARGET_PORT" &
       show_progress
     done
   fi
@@ -912,7 +1034,7 @@ main() {
         show_progress
         sleep 0.2
       done
-      test_one "cernet2" 6 "$prov" "教育网" "$host" "$idx" "$fixed_ip" 80 &
+      test_one "cernet2" 6 "$prov" "教育网" "$host" "$idx" "$fixed_ip" "$TARGET_PORT" &
       show_progress
     done
   fi
@@ -924,12 +1046,9 @@ main() {
   show_progress
   echo ""
 
-  # 收集结果并写入 CSV
+  # 收集结果并准备终端展示
   local report_time
   report_time=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S CST（北京时间）')
-  local CSV="/tmp/zstatic_nping_$(date +%Y%m%d_%H%M%S).csv"
-  printf '\xEF\xBB\xBF' > "$CSV"
-  echo "网络,IP版本,省份,运营商,域名,IP,状态,发送,收到,丢包率(%),平均延迟ms" >> "$CSV"
 
   local sorted_v4 sorted_v6 sorted_cernet sorted_cernet2 sorted_file f i status ip snd rcv loss lat
   sorted_v4=$(mktemp)
@@ -943,7 +1062,6 @@ main() {
         f="${RESULT_DIR}/cdn${family}_${i}"
         if [ -f "$f" ]; then
           IFS='|' read -r status prov isp host ip snd rcv loss lat < "$f"
-          echo "三网,IPv${family},$prov,$isp,$host,$ip,$status,$snd,$rcv,$loss,$lat" >> "$CSV"
           echo "$status|$prov|$isp|$host|$ip|$snd|$rcv|$loss|$lat" >> "$sorted_file"
         fi
       done
@@ -954,7 +1072,6 @@ main() {
       f="${RESULT_DIR}/cernet_${i}"
       if [ -f "$f" ]; then
         IFS='|' read -r status prov isp host ip snd rcv loss lat < "$f"
-        echo "CERNET,IPv4,$prov,$isp,$host,$ip,$status,$snd,$rcv,$loss,$lat" >> "$CSV"
         echo "$status|$prov|$isp|$host|$ip|$snd|$rcv|$loss|$lat" >> "$sorted_cernet"
       fi
     done
@@ -964,7 +1081,6 @@ main() {
       f="${RESULT_DIR}/cernet2_${i}"
       if [ -f "$f" ]; then
         IFS='|' read -r status prov isp host ip snd rcv loss lat < "$f"
-        echo "CERNET2,IPv6,$prov,$isp,$host,$ip,$status,$snd,$rcv,$loss,$lat" >> "$CSV"
         echo "$status|$prov|$isp|$host|$ip|$snd|$rcv|$loss|$lat" >> "$sorted_cernet2"
       fi
     done
@@ -995,9 +1111,6 @@ main() {
     fi
   fi
 
-  if [ "$UPLOAD_REPORT" -eq 1 ]; then
-    upload_report "$CSV" "${report_time%%（*}"
-  fi
   echo ""
 
   rm -f "$sorted_v4" "$sorted_v6" "$sorted_cernet" "$sorted_cernet2"
