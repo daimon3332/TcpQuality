@@ -5,8 +5,10 @@ TCP SYN 重传检测脚本，支持三网、教育网和自定义 IP。无参数
 ## 运行
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh)
 ```
+
+如果 GitHub Raw 返回 `429`，说明当前出口被 GitHub 临时限流；`curl -f` 会让下载失败而不是把错误页交给 Bash 执行。
 
 ## 参数
 
@@ -27,12 +29,12 @@ bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/run
 ## 示例
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --三网
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --全部
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --教育 --福建
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --移动 --联通
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --IP 219.229.81.211
-bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --教育 --福建 --IPv4 --次数 30 --端口 80
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --三网
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --全部
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --教育 --福建
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --移动 --联通
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --IP 219.229.81.211
+bash <(curl -fsSL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --教育 --福建 --IPv4 --次数 30 --端口 80
 ```
 
 默认会检测当前 VPS 可用的 IP 协议；如果显式指定 `--IPv4` 或 `--IPv6`，但当前 VPS 不支持该协议，脚本会提示并退出。教育网节点会优先解析域名，解析失败时再使用脚本内置 IP。
