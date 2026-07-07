@@ -261,7 +261,6 @@ TEST_ALL=0
 UPLOAD_REPORT=0
 ONLY_IPV4=0
 ONLY_IPV6=0
-DNS_SERVER=223.5.5.5
 REPORT_API=${TCPQUALITY_REPORT_API:-https://tcpquality.ibsgss.uk/api/reports}
 RESULT_DIR=$(mktemp -d)
 trap "rm -rf $RESULT_DIR" EXIT
@@ -296,7 +295,7 @@ TcpQuality 节点 TCP 丢包探测脚本
   - 指定教育网参数时: 在三网基础上增加 CERNET 和 CERNET2
   - 探测方式: 每节点发送 ${PACKETS} 个裸 TCP SYN 包，无内核重传
   - 并发数量: ${PARALLEL}
-  - DNS 解析: ${DNS_SERVER}
+  - DNS 解析: 使用系统 DNS
   - 目标端口: 80/tcp
   - 结果展示: 统计摘要、三网概览
   - CSV 输出: /tmp/zstatic_nping_YYYYmmdd_HHMMSS.csv
@@ -652,7 +651,7 @@ ipv6_available() {
 
 dig_short() {
   local host="$1" record_type="$2"
-  dig +short @"$DNS_SERVER" "$host" "$record_type" 2>/dev/null
+  dig +short "$host" "$record_type" 2>/dev/null
 }
 
 is_public_ipv4() {
@@ -791,7 +790,7 @@ export -f get_ipv6_route
 export -f dig_short
 export -f is_public_ipv4
 export -f resolve_ipv4
-export RESULT_DIR PACKETS DNS_SERVER
+export RESULT_DIR PACKETS
 
 # ===================== 主流程 =====================
 main() {
