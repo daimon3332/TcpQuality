@@ -55,12 +55,12 @@ check_nping() {
   fi
 }
 
-# ===================== 检测并安装 dig =====================
+# ===================== 检测并安装 DNS 工具 =====================
 check_dig() {
-  if command -v dig &>/dev/null; then
+  if command -v nslookup &>/dev/null || command -v dig &>/dev/null; then
     return 0
   fi
-  echo -e "${YELLOW}[!] dig 未安装，正在自动安装...${NC}"
+  echo -e "${YELLOW}[!] DNS 解析工具未安装，正在自动安装...${NC}"
   if command -v apt-get &>/dev/null; then
     if apt-get update -qq && apt-get install -y -qq dnsutils 2>/dev/null; then :; fi
   elif command -v dnf &>/dev/null; then
@@ -79,10 +79,10 @@ check_dig() {
     echo -e "${RED}[X] 无法自动安装 dig，请手动安装 dnsutils、bind-utils 或 bind${NC}"
     exit 1
   fi
-  if command -v dig &>/dev/null; then
-    echo -e "${GREEN}[√] dig 安装成功${NC}"
+  if command -v nslookup &>/dev/null || command -v dig &>/dev/null; then
+    echo -e "${GREEN}[√] DNS 解析工具安装成功${NC}"
   else
-    echo -e "${RED}[X] dig 安装失败${NC}"
+    echo -e "${RED}[X] DNS 解析工具安装失败${NC}"
     exit 1
   fi
 }
@@ -267,6 +267,8 @@ ONLY_IPV6=0
 INTERACTIVE=1
 TARGET_PORT=80
 PROVINCE_FILTER=
+CUSTOM_IP=
+CUSTOM_FAMILY=
 RESULT_DIR=$(mktemp -d)
 trap "rm -rf $RESULT_DIR" EXIT
 
@@ -280,34 +282,31 @@ Daimon的TCP重传检测
   bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) [选项]
 
 选项:
-  -h, --help        显示帮助信息并退出
-  -c, --count NUM   设置每节点发包数，默认 ${PACKETS}
-  --count=NUM       同上，设置每节点发包数
-  --port NUM        设置 TCP 目标端口，默认 ${TARGET_PORT}
-  --port=NUM        同上，设置 TCP 目标端口
-  -p, --parallel NUM
-                     设置并行节点数，范围 1-31，默认 ${PARALLEL}
-  --parallel=NUM    同上，设置并行节点数
-  -4, -v4, --v4     仅探测 IPv4
-  -6, -v6, --v6     仅探测 IPv6
-  --three           仅探测三网
-  --all             探测三网和教育网
-  --edu             仅探测教育网 CERNET IPv4 和 CERNET2 IPv6
-  --cm              探测移动，可与 --cu/--ct 组合
-  --cu              探测联通，可与 --cm/--ct 组合
-  --ct              探测电信，可与 --cm/--cu 组合
-  -fujian           仅探测福建教育网节点，需配合 --edu 或 --all
+  --帮助            显示帮助信息并退出
+  --三网            仅探测三网
+  --全部            探测三网和教育网
+  --教育            仅探测教育网 CERNET IPv4 和 CERNET2 IPv6
+  --移动            探测移动，可与 --联通/--电信 组合
+  --联通            探测联通，可与 --移动/--电信 组合
+  --电信            探测电信，可与 --移动/--联通 组合
+  --福建            仅探测福建教育网节点，需配合 --教育 或 --全部
+  --IPv4            仅探测 IPv4
+  --IPv6            仅探测 IPv6
+  --IP IP           仅探测指定 IP
+  --端口 NUM        设置 TCP 目标端口，默认 ${TARGET_PORT}
+  --次数 NUM        设置每节点发包数，默认 ${PACKETS}
+  --并发 NUM        设置并行节点数，范围 1-31，默认 ${PARALLEL}
 
 示例:
-  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) -c 100
-  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --edu -fujian
-  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --cm --cu
-  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --all -v4
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --三网
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --教育 --福建
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --移动 --联通
+  bash <(curl -sL https://raw.githubusercontent.com/daimon3332/TcpQuality/main/runTcpQuality.sh) --IP 219.229.81.211
 
 默认行为:
   - 无参数运行: 进入交互式脚本管理界面
   - 带参数但未指定范围: 默认探测三网
-  - 协议选择: 默认探测当前 VPS 可用协议；-4/-v4/--v4 或 -6/-v6/--v6 可限定 IP 版本
+  - 协议选择: 默认探测当前 VPS 可用协议；--IPv4 或 --IPv6 可限定 IP 版本
   - 指定单协议但当前 VPS 不支持时，直接退出
   - 探测方式: 每节点单发 ${PACKETS} 次裸 TCP SYN 包，无内核重传
   - 并发数量: ${PARALLEL}
@@ -317,7 +316,7 @@ Daimon的TCP重传检测
 
 依赖:
   - nping: 随 nmap 安装
-  - dig: 用于解析节点域名
+  - nslookup/dig: 用于解析节点域名
   - awk/sed/grep: 用于结果解析和展示
 
 安装提示:
@@ -338,11 +337,11 @@ parse_args() {
   fi
   while [ $# -gt 0 ]; do
     case "$1" in
-      -h|--help)
+      -h|--help|--帮助)
         show_help
         exit 0
         ;;
-      -c|--count)
+      --次数)
         if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ]; then
           echo -e "${RED}[X] 发包数必须是大于 0 的整数${NC}" >&2
           exit 1
@@ -350,7 +349,7 @@ parse_args() {
         PACKETS="$2"
         shift 2
         ;;
-      --count=*)
+      --次数=*)
         PACKETS="${1#*=}"
         if ! [[ "$PACKETS" =~ ^[0-9]+$ ]] || [ "$PACKETS" -lt 1 ]; then
           echo -e "${RED}[X] 发包数必须是大于 0 的整数${NC}" >&2
@@ -358,7 +357,7 @@ parse_args() {
         fi
         shift
         ;;
-      --port)
+      --端口)
         if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ] || [ "$2" -gt 65535 ]; then
           echo -e "${RED}[X] 端口必须是 1-65535 之间的整数${NC}" >&2
           exit 1
@@ -366,7 +365,7 @@ parse_args() {
         TARGET_PORT="$2"
         shift 2
         ;;
-      --port=*)
+      --端口=*)
         TARGET_PORT="${1#*=}"
         if ! [[ "$TARGET_PORT" =~ ^[0-9]+$ ]] || [ "$TARGET_PORT" -lt 1 ] || [ "$TARGET_PORT" -gt 65535 ]; then
           echo -e "${RED}[X] 端口必须是 1-65535 之间的整数${NC}" >&2
@@ -374,7 +373,7 @@ parse_args() {
         fi
         shift
         ;;
-      -p|--parallel)
+      --并发)
         if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ] || [ "$2" -gt 31 ]; then
           echo -e "${RED}[X] 并行节点数必须是 1-31 之间的整数${NC}" >&2
           exit 1
@@ -382,7 +381,7 @@ parse_args() {
         PARALLEL="$2"
         shift 2
         ;;
-      --parallel=*)
+      --并发=*)
         PARALLEL="${1#*=}"
         if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [ "$PARALLEL" -lt 1 ] || [ "$PARALLEL" -gt 31 ]; then
           echo -e "${RED}[X] 并行节点数必须是 1-31 之间的整数${NC}" >&2
@@ -390,22 +389,22 @@ parse_args() {
         fi
         shift
         ;;
-      -4|-v4|--v4)
+      --IPv4)
         ONLY_IPV4=1
         shift
         ;;
-      -6|-v6|--v6)
+      --IPv6)
         ONLY_IPV6=1
         shift
         ;;
-      --three)
+      --三网)
         TEST_CDN=1
         SELECT_CM=1
         SELECT_CU=1
         SELECT_CT=1
         shift
         ;;
-      --all)
+      --全部)
         TEST_CDN=1
         TEST_EDU=1
         SELECT_CM=1
@@ -413,27 +412,55 @@ parse_args() {
         SELECT_CT=1
         shift
         ;;
-      --edu)
+      --教育)
         TEST_EDU=1
         shift
         ;;
-      --cm)
+      --移动)
         TEST_CDN=1
         SELECT_CM=1
         shift
         ;;
-      --cu)
+      --联通)
         TEST_CDN=1
         SELECT_CU=1
         shift
         ;;
-      --ct)
+      --电信)
         TEST_CDN=1
         SELECT_CT=1
         shift
         ;;
-      -fujian)
+      --福建)
         PROVINCE_FILTER=福建
+        shift
+        ;;
+      --IP)
+        if [ -z "${2:-}" ]; then
+          echo -e "${RED}[X] --IP 需要指定目标 IP${NC}" >&2
+          exit 1
+        fi
+        CUSTOM_IP="$2"
+        if [[ "$CUSTOM_IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && is_ipv4_address "$CUSTOM_IP"; then
+          CUSTOM_FAMILY=4
+        elif [[ "$CUSTOM_IP" == *:* ]]; then
+          CUSTOM_FAMILY=6
+        else
+          echo -e "${RED}[X] --IP 只支持 IPv4 或 IPv6 地址${NC}" >&2
+          exit 1
+        fi
+        shift 2
+        ;;
+      --IP=*)
+        CUSTOM_IP="${1#*=}"
+        if [[ "$CUSTOM_IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && is_ipv4_address "$CUSTOM_IP"; then
+          CUSTOM_FAMILY=4
+        elif [[ "$CUSTOM_IP" == *:* ]]; then
+          CUSTOM_FAMILY=6
+        else
+          echo -e "${RED}[X] --IP 只支持 IPv4 或 IPv6 地址${NC}" >&2
+          exit 1
+        fi
         shift
         ;;
       *)
@@ -443,14 +470,29 @@ parse_args() {
         ;;
     esac
   done
-  if [ "$INTERACTIVE" -eq 0 ] && [ "$TEST_CDN" -eq 0 ] && [ "$TEST_EDU" -eq 0 ]; then
+  if [ -n "$CUSTOM_IP" ]; then
+    TEST_CDN=0
+    TEST_EDU=0
+  elif [ "$INTERACTIVE" -eq 0 ] && [ "$TEST_CDN" -eq 0 ] && [ "$TEST_EDU" -eq 0 ]; then
     TEST_CDN=1
     SELECT_CM=1
     SELECT_CU=1
     SELECT_CT=1
   fi
   if [ -n "$PROVINCE_FILTER" ] && [ "$TEST_EDU" -ne 1 ]; then
-    echo -e "${RED}[X] -fujian 需要配合 --edu 或 --all 使用${NC}" >&2
+    echo -e "${RED}[X] --福建 需要配合 --教育 或 --全部 使用${NC}" >&2
+    exit 1
+  fi
+  if [ "$ONLY_IPV4" -eq 1 ] && [ "$ONLY_IPV6" -eq 1 ]; then
+    echo -e "${RED}[X] --IPv4 和 --IPv6 不能同时指定${NC}" >&2
+    exit 1
+  fi
+  if [ -n "$CUSTOM_IP" ] && [ "$ONLY_IPV4" -eq 1 ] && [ "$CUSTOM_FAMILY" != "4" ]; then
+    echo -e "${RED}[X] --IP 是 IPv6，不能同时指定 --IPv4${NC}" >&2
+    exit 1
+  fi
+  if [ -n "$CUSTOM_IP" ] && [ "$ONLY_IPV6" -eq 1 ] && [ "$CUSTOM_FAMILY" != "6" ]; then
+    echo -e "${RED}[X] --IP 是 IPv4，不能同时指定 --IPv6${NC}" >&2
     exit 1
   fi
 }
@@ -603,6 +645,41 @@ show_education_results() {
   }' "$file"
 }
 
+show_custom_results() {
+  local title="$1" file="$2"
+  awk -F'|' -v title="$title" -v green="$GREEN" -v yellow="$YELLOW" -v red="$RED" -v cyan="$CYAN" -v dim="$DIM" -v bold="$BOLD" -v nc="$NC" '
+  function compact_loss(v) {
+    return int(v + 0.5)
+  }
+  function color(status, loss, lat,   l, v) {
+    if (status != "OK") return red
+    l = loss + 0
+    v = lat + 0
+    if (l > 20 || v > 240) return red
+    if (l > 0 || v > 150) return yellow
+    return green
+  }
+  {
+    status = $1
+    host = $4
+    ip = $5
+    snd = $6
+    rcv = $7
+    loss = $8
+    lat = $9
+  }
+  END {
+    c = color(status, loss, lat)
+    printf "  %s%s%s 统计摘要%s\n\n", bold, cyan, title, nc
+    if (status == "OK") {
+      printf "  目标: %s%s%s  发包: %s  接收: %s  结果: %s%.0fms / %s%%%s\n", cyan, ip, nc, snd, rcv, c, lat + 0, compact_loss(loss), nc
+    } else {
+      printf "  目标: %s%s%s  结果: %s失败%s\n", cyan, host, nc, red, nc
+    }
+    printf "  %s颜色: %s正常%s  %s延迟151-240ms或1-20%%重传%s  %s延迟>240ms或>20%%重传，或失败%s\n\n", dim, green, dim, yellow, dim, red, dim
+  }' "$file"
+}
+
 print_header() {
   echo -e "${BOLD}${CYAN}Daimon的TCP重传检测${NC}"
   echo -e "${DIM}------------------------------------------------------------${NC}"
@@ -618,7 +695,7 @@ configure_interactive() {
   local choice port count
 
   while true; do
-    clear
+    clear 2>/dev/null || true
     print_header
     echo "  请选择测试范围："
     echo "    1. 三网"
@@ -644,7 +721,7 @@ configure_interactive() {
   done
 
   while true; do
-    clear
+    clear 2>/dev/null || true
     print_header
     echo "  请选择 IP 协议："
     if [ "$ipv4_available_flag" -eq 1 ]; then
@@ -764,7 +841,7 @@ ipv6_available() {
   local host target
   read -r _ _ host <<< "${NODES[0]}"
   host=${host/-v4./-v6.}
-  target=$(dig_short "$host" AAAA | grep -E '^[0-9A-Fa-f:]+$' | head -1)
+  target=$(resolve_ipv6 "$host") || target=""
   case "$target" in
     [23]*:*) get_ipv6_route "$target" >/dev/null ;;
     *) return 1 ;;
@@ -773,7 +850,35 @@ ipv6_available() {
 
 dig_short() {
   local host="$1" record_type="$2"
+  command -v dig &>/dev/null || return 1
   dig +short "$host" "$record_type" 2>/dev/null
+}
+
+nslookup_short() {
+  local host="$1" record_type="$2"
+  command -v nslookup &>/dev/null || return 1
+  nslookup -type="$record_type" "$host" 2>/dev/null | awk '
+    /^Address: / && $2 !~ /#/ { print $2 }
+  '
+}
+
+dns_short() {
+  local host="$1" record_type="$2"
+  nslookup_short "$host" "$record_type" || true
+  dig_short "$host" "$record_type" || true
+}
+
+is_ipv4_address() {
+  local ip="$1"
+  awk -F. '
+    NF != 4 { exit 1 }
+    {
+      for (i = 1; i <= 4; i++) {
+        if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) exit 1
+      }
+      exit 0
+    }
+  ' <<< "$ip"
 }
 
 is_public_ipv4() {
@@ -806,15 +911,24 @@ resolve_ipv4() {
       printf "%s\n" "$ip"
       return 0
     fi
-  done < <(dig_short "$host" A)
+  done < <(dns_short "$host" A)
   return 1
 }
 
-ipv4_available() {
-  local host target
-  read -r _ _ host <<< "${NODES[0]}"
-  target=$(resolve_ipv4 "$host") || return 1
+resolve_ipv6() {
+  local host="$1" ip
+  while IFS= read -r ip; do
+    ip=${ip%%#*}
+    if [[ "$ip" =~ ^[0-9A-Fa-f:]+$ ]]; then
+      printf "%s\n" "$ip"
+      return 0
+    fi
+  done < <(dns_short "$host" AAAA)
+  return 1
+}
 
+ipv4_route_available() {
+  local target="$1"
   if command -v ip &>/dev/null; then
     ip -4 route get "$target" >/dev/null 2>&1
   elif command -v route &>/dev/null; then
@@ -824,18 +938,30 @@ ipv4_available() {
   fi
 }
 
+ipv4_available() {
+  local host target
+  read -r _ _ host <<< "${NODES[0]}"
+  target=$(resolve_ipv4 "$host") || return 1
+
+  ipv4_route_available "$target"
+}
+
 # ===================== 单节点测试 =====================
 test_one() {
   local group="$1" family="$2" prov="$3" isp="$4" host="$5" idx="$6"
   local fixed_ip="${7:-}" port="${8:-80}"
   local outfile="${RESULT_DIR}/${group}_${idx}"
 
-  local ip="$fixed_ip"
-  if [ -z "$ip" ] && [ "$family" = "6" ]; then
-    ip=$(dig_short "$host" AAAA | grep -E '^[0-9A-Fa-f:]+$' | head -1)
-  elif [ -z "$ip" ]; then
+  local ip=""
+  if [ "$family" = "6" ]; then
+    ip=$(resolve_ipv6 "$host") || ip=""
+  else
     ip=$(resolve_ipv4 "$host") || ip=""
-  elif [ "$family" = "4" ] && ! is_public_ipv4 "$ip"; then
+  fi
+  if [ -z "$ip" ] && [ -n "$fixed_ip" ]; then
+    ip="$fixed_ip"
+  fi
+  if [ "$family" = "4" ] && ! is_public_ipv4 "$ip"; then
     ip=""
   fi
   if [ -z "$ip" ]; then
@@ -898,13 +1024,18 @@ test_one() {
 export -f test_one
 export -f get_ipv6_route
 export -f dig_short
+export -f nslookup_short
+export -f dns_short
+export -f is_ipv4_address
 export -f is_public_ipv4
 export -f resolve_ipv4
+export -f resolve_ipv6
+export -f ipv4_route_available
 export RESULT_DIR PACKETS
 
 # ===================== 主流程 =====================
 main() {
-  clear
+  clear 2>/dev/null || true
   print_header
 
   if [ "$(id -u)" -ne 0 ]; then
@@ -913,21 +1044,38 @@ main() {
   fi
 
   check_nping
-  check_dig
+  if [ -z "$CUSTOM_IP" ]; then
+    check_dig
+  fi
 
   local ipv4_enabled=0 ipv6_enabled=0 want_ipv4=1 want_ipv6=1
   local has_ipv4=0 has_ipv6=0 cdn_count=0 cernet_count=0 cernet2_count=0
-  if ipv4_available; then has_ipv4=1; fi
-  if ipv6_available; then has_ipv6=1; fi
-
-  if [ "$has_ipv4" -eq 0 ] && [ "$has_ipv6" -eq 0 ]; then
-    echo -e "${RED}[X] 未检测到可用 IPv4 或 IPv6${NC}"
-    exit 1
+  if [ -n "$CUSTOM_IP" ]; then
+    if [ "$CUSTOM_FAMILY" = "4" ]; then
+      if ipv4_route_available "$CUSTOM_IP"; then
+        has_ipv4=1
+      else
+        echo -e "${RED}[X] 当前 VPS 不支持访问该 IPv4${NC}"
+        exit 1
+      fi
+    elif get_ipv6_route "$CUSTOM_IP" >/dev/null; then
+      has_ipv6=1
+    else
+      echo -e "${RED}[X] 当前 VPS 不支持访问该 IPv6${NC}"
+      exit 1
+    fi
+  else
+    if ipv4_available; then has_ipv4=1; fi
+    if ipv6_available; then has_ipv6=1; fi
+    if [ "$has_ipv4" -eq 0 ] && [ "$has_ipv6" -eq 0 ]; then
+      echo -e "${RED}[X] 未检测到可用 IPv4 或 IPv6${NC}"
+      exit 1
+    fi
   fi
 
   if [ "$INTERACTIVE" -eq 1 ]; then
     configure_interactive "$has_ipv4" "$has_ipv6"
-    clear
+    clear 2>/dev/null || true
     print_header
   fi
 
@@ -983,18 +1131,29 @@ main() {
     done
   fi
 
-  TOTAL=0
-  if [ "$ipv4_enabled" -eq 1 ] && [ "$TEST_CDN" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
-  if [ "$ipv4_enabled" -eq 1 ] && [ "$TEST_EDU" -eq 1 ]; then TOTAL=$((TOTAL + cernet_count)); fi
-  if [ "$want_ipv6" -eq 1 ] && [ "$has_ipv6" -eq 1 ]; then
-    ipv6_enabled=1
-    if [ "$TEST_CDN" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
-    if [ "$TEST_EDU" -eq 1 ]; then TOTAL=$((TOTAL + cernet2_count)); fi
-    echo -e "${GREEN}[√] 检测到可用 IPv6${NC}"
-  elif [ "$want_ipv6" -eq 1 ]; then
-    echo -e "${YELLOW}[!] 未检测到可用 IPv6，已跳过 IPv6${NC}"
-    if [ "$TEST_EDU" -eq 1 ]; then
-      echo -e "${YELLOW}[!] 二代教育网需要 IPv6，已跳过${NC}"
+  if [ -n "$CUSTOM_IP" ]; then
+    TOTAL=1
+    if [ "$CUSTOM_FAMILY" = "4" ]; then
+      ipv4_enabled=1
+      ipv6_enabled=0
+    else
+      ipv4_enabled=0
+      ipv6_enabled=1
+    fi
+  else
+    TOTAL=0
+    if [ "$ipv4_enabled" -eq 1 ] && [ "$TEST_CDN" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
+    if [ "$ipv4_enabled" -eq 1 ] && [ "$TEST_EDU" -eq 1 ]; then TOTAL=$((TOTAL + cernet_count)); fi
+    if [ "$want_ipv6" -eq 1 ] && [ "$has_ipv6" -eq 1 ]; then
+      ipv6_enabled=1
+      if [ "$TEST_CDN" -eq 1 ]; then TOTAL=$((TOTAL + cdn_count)); fi
+      if [ "$TEST_EDU" -eq 1 ]; then TOTAL=$((TOTAL + cernet2_count)); fi
+      echo -e "${GREEN}[√] 检测到可用 IPv6${NC}"
+    elif [ "$want_ipv6" -eq 1 ]; then
+      echo -e "${YELLOW}[!] 未检测到可用 IPv6，已跳过 IPv6${NC}"
+      if [ "$TEST_EDU" -eq 1 ]; then
+        echo -e "${YELLOW}[!] 二代教育网需要 IPv6，已跳过${NC}"
+      fi
     fi
   fi
   if [ "$want_ipv6" -eq 0 ]; then
@@ -1013,6 +1172,11 @@ main() {
   show_progress
   local family entry prov isp host fixed_ip
   local -a families=()
+  if [ -n "$CUSTOM_IP" ]; then
+    idx=1
+    test_one "custom${CUSTOM_FAMILY}" "$CUSTOM_FAMILY" "自定义" "IP" "$CUSTOM_IP" "$idx" "$CUSTOM_IP" "$TARGET_PORT" &
+    show_progress
+  fi
   if [ "$TEST_CDN" -eq 1 ]; then
     if [ "$ipv4_enabled" -eq 1 ]; then families+=(4); fi
     if [ "$ipv6_enabled" -eq 1 ]; then families+=(6); fi
@@ -1079,11 +1243,19 @@ main() {
   local report_time
   report_time=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S CST（北京时间）')
 
-  local sorted_v4 sorted_v6 sorted_cernet sorted_cernet2 sorted_file f i status ip snd rcv loss lat
+  local sorted_v4 sorted_v6 sorted_cernet sorted_cernet2 sorted_custom sorted_file f i status ip snd rcv loss lat
   sorted_v4=$(mktemp)
   sorted_v6=$(mktemp)
   sorted_cernet=$(mktemp)
   sorted_cernet2=$(mktemp)
+  sorted_custom=$(mktemp)
+  if [ -n "$CUSTOM_IP" ]; then
+    f="${RESULT_DIR}/custom${CUSTOM_FAMILY}_1"
+    if [ -f "$f" ]; then
+      IFS='|' read -r status prov isp host ip snd rcv loss lat < "$f"
+      echo "$status|$prov|$isp|$host|$ip|$snd|$rcv|$loss|$lat" >> "$sorted_custom"
+    fi
+  fi
   if [ "$TEST_CDN" -eq 1 ]; then
     for family in "${families[@]}"; do
       if [ "$family" = "4" ]; then sorted_file="$sorted_v4"; else sorted_file="$sorted_v6"; fi
@@ -1116,11 +1288,14 @@ main() {
   fi
 
   # ---- TUI 结果展示 ----
-  clear
+  clear 2>/dev/null || true
   print_header
   echo -e "  ${DIM}报告时间：${report_time}${NC}"
   echo ""
 
+  if [ -n "$CUSTOM_IP" ]; then
+    show_custom_results "自定义 IP-IPv${CUSTOM_FAMILY}" "$sorted_custom"
+  fi
   if [ "$TEST_CDN" -eq 1 ]; then
     if [ "$ipv4_enabled" -eq 1 ]; then
       show_family_results "IPv4" "$sorted_v4"
@@ -1138,7 +1313,7 @@ main() {
 
   echo ""
 
-  rm -f "$sorted_v4" "$sorted_v6" "$sorted_cernet" "$sorted_cernet2"
+  rm -f "$sorted_v4" "$sorted_v6" "$sorted_cernet" "$sorted_cernet2" "$sorted_custom"
 }
 
 parse_args "$@"
